@@ -48,36 +48,52 @@ final class SubStream
         return ($this->offset >= $this->enforceOffsetMax);
     }
 
+    /**
+     * Parse our path structure.
+     *
+     * @param string $path
+     *   The path to parse.
+     *
+     * @return array|bool
+     *   On success, an array containing:
+     *   - the scheme (expecting SUBSTREAM_SCHEME)
+     *   - the offset
+     *   - the length from the offset
+     *   - the resource ID
+     *   On failure, boolean FALSE.
+     */
+    protected function parsePath($path) {
+        $matches = [];
+        $sep = '/';
+        $pattern = implode('', [
+          "{$sep}^",
+          '([A-Za-z0-9.-]+)',
+          preg_quote('://', $sep),
+          '(\d+)',
+          preg_quote(':', $sep),
+          '(\d+)',
+          preg_quote('/', $sep),
+          "(\d+)\${$sep}",
+        ]);
+        return preg_match($pattern, $path, $matches) ?
+          array_slice($matches, 1) :
+          false;
+    }
 
     public function stream_open(string $path, string $mode, int $options)
     {
         $errors = ($options & \STREAM_REPORT_ERRORS);
-        $parts = \parse_url($path);
 
-        if (!isset($parts['scheme']) || $parts['scheme'] !== SUBSTREAM_SCHEME) {
+        $parsed = $this->parsePath($path);
+        if (!$parsed) {
+            $errors && \trigger_error('Failed to parse the URL.', \E_USER_ERROR);
+            return false;
+        }
+        list($scheme, $offset, $length, $resourceId) = $parsed;
+
+        if ($scheme !== SUBSTREAM_SCHEME) {
             $errors && \trigger_error("Invalid URL scheme.", \E_USER_ERROR);
             return false;
-        }
-
-        if (!isset($parts['host']) || !\is_numeric($parts['host'])) {
-            $errors && \trigger_error("Invalid start offset.", \E_USER_ERROR);
-            return false;
-        } else {
-            $offset = \intval($parts['host']);
-        }
-
-        if (!isset($parts['port']) || !\is_numeric($parts['port'])) {
-            $errors && \trigger_error("Invalid length.", \E_USER_ERROR);
-            return false;
-        } else {
-            $length = \intval($parts['port']);
-        }
-
-        if (!isset($parts['path']) || !\is_numeric(\substr($parts['path'], 1))) {
-            $errors && \trigger_error("Invalid resource to wrap.", \E_USER_ERROR);
-            return false;
-        } else {
-            $resourceId = \intval(\substr($parts['path'], 1));
         }
 
         if (\function_exists('\get_resources')) {
