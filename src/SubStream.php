@@ -147,7 +147,7 @@ final class SubStream
 
             return $data;
         } else {
-            return false;
+            return '';
         }
     }
 
