@@ -7,7 +7,18 @@ namespace iqb\stream;
  * A SubStream is read only.
  * The wrapped stream/resource must be seekable for SubStream to work.
  *
- * The URL schema is: fopen("iqb.substream://$startindex:$length/$resourceId")
+ * A substream can be created as follows:
+ * 1. Use resource ID in the URL
+ * <code>
+ *     $streamToWrap = fopen(...);
+ *     fopen("iqb.substream://$startindex:$length/$streamToWrap", "r");
+ * </code>
+ *
+ * 2. Pass the resource as part of the stream context:
+ * <code>
+ * *     $streamToWrap = fopen(...);
+ * *     fopen("iqb.substream://$startindex:$length/$streamToWrap", "r", false, stream_context_create([iqb.substream => ["stream" => $streamToWrap]]));
+ * * </code>
  */
 final class SubStream
 {
@@ -80,57 +91,91 @@ final class SubStream
           false;
     }
 
-    public function stream_open(string $path, string $mode, int $options)
+    public function stream_open(string $path, string $mode, int $options): bool
     {
         $errors = ($options & \STREAM_REPORT_ERRORS);
-
-        $parsed = $this->parsePath($path);
-        if (!$parsed) {
-            $errors && \trigger_error('Failed to parse the URL.', \E_USER_ERROR);
+        
+        if (!preg_match('/^' . preg_quote(SUBSTREAM_SCHEME, '/') . ':\/\/(?<offset>[0-9]+):(?<length>[0-9]+)(?:\/(?:(?<resourceId>[0-9]+)?|(?<url>.+))?)?$/', $path, $matches)) {
+            $errors && trigger_error("Failed to parse URL.", E_USER_ERROR);
             return false;
         }
-        list($scheme, $offset, $length, $resourceId) = $parsed;
-
-        if ($scheme !== SUBSTREAM_SCHEME) {
-            $errors && \trigger_error("Invalid URL scheme.", \E_USER_ERROR);
+        
+        if (($offset = intval($matches['offset'])) < 0) {
+            $errors && trigger_error("Invalid negative offset.", E_USER_ERROR);
             return false;
         }
-
-        if (\function_exists('\get_resources')) {
-            $resources = \get_resources('stream');
-            if (isset($resources[$resourceId])) {
-                $originalResource = $resources[$resourceId];
-                $meta = \stream_get_meta_data($originalResource);
-
-                if (!isset($meta['seekable']) || !$meta['seekable']) {
-                    $errors && \trigger_error("Can only wrap seekable resources.", \E_USER_ERROR);
-                    return false;
-                }
-
-                if ($meta['wrapper_type'] === 'PHP' && $meta['stream_type'] === 'MEMORY') {
-                    $oldStreamPosition = \ftell($originalResource);
-                    $resource = \fopen($meta['uri'], 'w+b');
-                    \fseek($originalResource, $this->enforceOffsetMin);
-                    \stream_copy_to_stream($originalResource, $resource, $length, $offset);
-                    $this->enforceOffsetMin = $this->offset = 0;
-                    $this->enforceOffsetMax = $length;
-                    \fseek($originalResource, $oldStreamPosition);
-                }
-
-                else {
-                    $this->enforceOffsetMin = $this->offset = $offset;
-                    $this->enforceOffsetMax = $offset + $length;
-                    $resource = \fopen($meta['uri'], 'r');
-                }
+        
+        if (($length = intval($matches['length'])) < 0) {
+            $errors && trigger_error("Invalid negative length.", E_USER_ERROR);
+            return false;
+        }
+        
+        if ($resourceId = ($matches['resourceId'] ?? null)) {
+            $resources = get_resources('stream');
+            if (!isset($resources[$resourceId])) {
+                $errors && trigger_error("Invalid resource #$resourceId.", E_USER_ERROR);
+                return false;
             }
+            
+            return $this->cloneStream($resources[$resourceId], $offset, $length, $errors);
         }
+        
+        elseif ($url = $matches['url'] ?? null) {
+            $this->handle = fopen($url, $mode);
+            if (!$this->handle) {
+                $errors && trigger_error("Failed to open '$url'.", E_USER_ERROR);
+                return false;
+            }
+            fseek($this->handle, $offset);
+            $this->offset = 0;
+            $this->enforceOffsetMin = $offset;
+            $this->enforceOffsetMax = $offset + $length;
+            return true;
+        }
+        
+        elseif ($this->context && ($contextOptions = stream_context_get_options($this->context))) {
+            if (!isset($contextOptions[SUBSTREAM_SCHEME]['stream']) || !is_resource($contextOptions[SUBSTREAM_SCHEME]['stream'])) {
+                $errors && trigger_error("No valid stream found in stream context.", E_USER_ERROR);
+                return false;
+            }
+            
+            return $this->cloneStream($contextOptions[SUBSTREAM_SCHEME]['stream'], $offset, $length, $errors);
+        }
+        
+        else {
+            $errors && trigger_error("No stream resource was provided.", E_USER_ERROR);
+            return false;
+        }
+    }
 
-        if (!isset($resource)) {
-            $errors && \trigger_error("Resource not available.", \E_USER_ERROR);
+
+    private function cloneStream($originalResource, int $offset, int $length, bool $errors): bool
+    {
+        $meta = stream_get_meta_data($originalResource);
+        if (!isset($meta['seekable']) || !$meta['seekable']) {
+            $errors && trigger_error("Can only wrap seekable resources.", E_USER_ERROR);
             return false;
         }
 
-        $this->handle = $resource;
+        // Copy memory stream as "reopening" is not possible and reset old stream position
+        if ($meta['wrapper_type'] === 'PHP' && $meta['stream_type'] === 'MEMORY') {
+            $this->handle = fopen($meta['uri'], $meta['mode']);
+            $oldStreamPosition = ftell($originalResource);
+            stream_copy_to_stream($originalResource, $this->handle, $length, $offset);
+            fseek($this->handle, 0);
+            $this->enforceOffsetMin = $this->offset = 0;
+            $this->enforceOffsetMax = $length;
+            fseek($originalResource, $oldStreamPosition);
+        }
+
+        // Reopen stream
+        else {
+            $this->enforceOffsetMin = $this->offset = $offset;
+            $this->enforceOffsetMax = $offset + $length;
+            $this->handle = fopen($meta['uri'], 'r');
+            fseek($this->handle, $this->offset);
+        }
+        
         return true;
     }
 
@@ -147,7 +192,7 @@ final class SubStream
 
             return $data;
         } else {
-            return false;
+            return '';
         }
     }
 

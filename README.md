@@ -7,7 +7,7 @@
 ## Issues/pull requests
 
 This repository is a subtree split of the [iqb/Morgue](https://github.com/iqb/Morgue) repository
- so it can be required as a stand alone package via composer.
+ so it can be required as a standalone package via composer.
 To open an issues or pull request, please go to the [iqb/Morgue](https://github.com/iqb/Morgue) repository.
 
 ## Installation
@@ -27,15 +27,20 @@ To use as substream, just open a new like that:
 
 use const iqb\stream\SUBSTREAM_SCHEME;
 
-$originalStream = \fopen('filename', 'r');
+$originalStream = fopen('filename', 'r');
 $offset = 25;
 $length = 100;
 
-$substream = \fopen(SUBSTREAM_SCHEME . "://$offset:$length/" . (int)$originalStream);
+// Provide the stream via a stream context
+$context = stream_context_create([SUBSTREAM_SCHEME => ['stream' => $originalStream]]);
+$substream = fopen(SUBSTREAM_SCHEME . "://$offset:$length", "r", false, $context);
 
-\fseek($orignalStream, 50);
-\fseek($substream, 25);
+// Alternatively, you can just put the stream into the URL
+$substream = fopen(SUBSTREAM_SCHEME . "://$offset:$length/$originalStream", "r");
+
+fseek($orignalStream, 50);
+fseek($substream, 25);
 
 // Will not fail
-assert(\fread($originalStream, 50) === \fread($substream, 50));
+assert(fread($originalStream, 50) === fread($substream, 50));
 ```
